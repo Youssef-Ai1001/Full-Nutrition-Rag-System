@@ -6,9 +6,12 @@ from models.ChunkModel import ChunkModel
 import logging
 from controllers import NLPController
 from models import ResponseSignal
+from tqdm.auto import tqdm
+
 
 logger = logging.getLogger("uvicorn.error")
 
+# Create an API router for the NLP endpoints
 nlp_router = APIRouter(
     prefix="/api/v1/nlp",
     tags=["api_v1", "nlp"],
@@ -21,11 +24,23 @@ async def index_project(
     project_id: int,
     push_request: PushRequest,
 ):
+    """
+    Indexes the data of a project into the vector database.
 
+    Args:
+        request (Request): The incoming request.
+        project_id (int): The ID of the project to index.
+        push_request (PushRequest): The request body.
+
+    Returns:
+        JSONResponse: A JSON response indicating the status of the indexing process.
+    """
+
+    # Create model instances
     project_model = await ProjectModel.create_instance(db_client=request.app.db_client)
-
     chunk_model = await ChunkModel.create_instance(db_client=request.app.db_client)
 
+    # Get the project from the database
     project = await project_model.get_or_create_project(project_id=project_id)
 
     if not project:
@@ -34,6 +49,7 @@ async def index_project(
             content={"Signal": ResponseSignal.PROJECT_NOT_FOUND_ERROR.value},
         )
 
+    # Create an NLP controller instance
     nlp_controller = NLPController(
         vectordb_client=request.app.vectordb_client,
         generation_client=request.app.generation_client,
@@ -46,6 +62,25 @@ async def index_project(
     inserted_items_count = 0
     idx = 0
 
+    # step 1 : create collection if not exists
+    collection_name = nlp_controller.create_collection_name(project_id=project.id)
+    _ = await request.app.vectordb_client.create_collection(
+        collection_name=collection_name,
+        embedding_size=request.app.embedding_client.embedding_size,
+        do_reset=push_request.do_reset,
+    )
+
+    # step 2 : Batch process chunks
+    total_chunks_count = await chunk_model.get_chunks_count_by_project_id(
+        project_id=project.id
+    )
+
+    # Create a progress bar
+    pbar = tqdm(
+        total=total_chunks_count, desc="Indexing Chunks", unit="chunk", position=0
+    )
+
+    # Process chunks in batches
     while has_records:
         page_chunks = await chunk_model.get_project_chunks(
             project_id=project.id, page_no=page_no
@@ -57,13 +92,13 @@ async def index_project(
             has_records = 0
             break
 
-        chunks_ids = list(range(idx, idx + len(page_chunks)))
+        chunks_ids = [c.chunk_id for c in page_chunks]
         idx += len(page_chunks)
 
-        is_inserted = nlp_controller.index_into_vector_db(
+        # Index the chunks into the vector database
+        is_inserted = await nlp_controller.index_into_vector_db(
             project=project,
             chunks=page_chunks,
-            do_reset=push_request.do_reset,
             chunks_ids=chunks_ids,
         )
 
@@ -73,7 +108,9 @@ async def index_project(
                 content={"Signal": ResponseSignal.INSERT_INTO_VECTORDB_ERROR.value},
             )
 
+        pbar.update(len(page_chunks))
         inserted_items_count += len(page_chunks)
+
     return JSONResponse(
         content={
             "Signal": ResponseSignal.INSERT_INTO_VECTORDB_SUCCESS.value,
@@ -87,6 +124,16 @@ async def get_project_index_info(
     request: Request,
     project_id: int,
 ):
+    """
+    Gets information about the index of a project.
+
+    Args:
+        request (Request): The incoming request.
+        project_id (int): The ID of the project.
+
+    Returns:
+        JSONResponse: A JSON response containing the index information.
+    """
     project_model = await ProjectModel.create_instance(db_client=request.app.db_client)
 
     project = await project_model.get_or_create_project(project_id=project_id)
@@ -98,7 +145,10 @@ async def get_project_index_info(
         template_parser=request.app.template_parser,
     )
 
-    collection_info = nlp_controller.get_vector_db_collection_info(project=project)
+    # Get the collection information from the vector database
+    collection_info = await nlp_controller.get_vector_db_collection_info(
+        project=project
+    )
 
     return JSONResponse(
         content={
@@ -114,6 +164,17 @@ async def search_index(
     project_id: int,
     search_request: SearchRequest,
 ):
+    """
+    Searches the index of a project.
+
+    Args:
+        request (Request): The incoming request.
+        project_id (int): The ID of the project.
+        search_request (SearchRequest): The request body.
+
+    Returns:
+        JSONResponse: A JSON response containing the search results.
+    """
     project_model = await ProjectModel.create_instance(db_client=request.app.db_client)
 
     project = await project_model.get_or_create_project(project_id=project_id)
@@ -125,7 +186,8 @@ async def search_index(
         template_parser=request.app.template_parser,
     )
 
-    results = nlp_controller.search_vector_db_collection(
+    # Search the vector database
+    results = await nlp_controller.search_vector_db_collection(
         project=project, text=search_request.text, limit=search_request.limit
     )
 
@@ -147,6 +209,17 @@ async def search_index(
 
 @nlp_router.post("/index/answer/{project_id}")
 async def answer_rag(request: Request, project_id: int, search_request: SearchRequest):
+    """
+    Answers a question using the RAG model.
+
+    Args:
+        request (Request): The incoming request.
+        project_id (int): The ID of the project.
+        search_request (SearchRequest): The request body.
+
+    Returns:
+        JSONResponse: A JSON response containing the answer.
+    """
 
     project_model = await ProjectModel.create_instance(db_client=request.app.db_client)
     project = await project_model.get_or_create_project(project_id=project_id)
@@ -158,7 +231,8 @@ async def answer_rag(request: Request, project_id: int, search_request: SearchRe
         template_parser=request.app.template_parser,
     )
 
-    answer, full_prompt, chat_history = nlp_controller.answer_rag_question(
+    # Answer the question using the RAG model
+    answer, full_prompt, chat_history = await nlp_controller.answer_rag_question(
         project=project, query=search_request.text, limit=search_request.limit
     )
 

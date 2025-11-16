@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, Depends, UploadFile, status, Request
+from fastapi import APIRouter, Depends, UploadFile, status, Request
 from fastapi.responses import JSONResponse
 import os
 from helpers.config import get_settings, Settings
@@ -12,10 +12,11 @@ from models.db_schemas import DataChunk, Asset
 from models.ChunkModel import ChunkModel
 from models.AssetModel import AssetModel
 from models.enums.AssetTypeEnum import AssetTypeEnum
-from bson.objectid import ObjectId
+from controllers import NLPController
 
 logger = logging.getLogger("uvicorn.error")
 
+# Create an API router for the data endpoints
 data_router = APIRouter(
     prefix="/api/v1/data",
     tags=["api_v1", "data"],
@@ -29,6 +30,18 @@ async def upload_file(
     file: UploadFile,
     app_settings: Settings = Depends(get_settings),
 ):
+    """
+    Uploads a file to a project.
+
+    Args:
+        request (Request): The incoming request.
+        project_id (int): The ID of the project.
+        file (UploadFile): The file to upload.
+        app_settings (Settings, optional): The application settings. Defaults to Depends(get_settings).
+
+    Returns:
+        JSONResponse: A JSON response indicating the status of the file upload.
+    """
 
     project_model = await ProjectModel.create_instance(db_client=request.app.db_client)
 
@@ -43,12 +56,14 @@ async def upload_file(
             status_code=status.HTTP_400_BAD_REQUEST, content={"Signal": result_signal}
         )
 
+    # Generate a unique file path
     project_dir_path = ProjectController().get_project_path(project_id=project_id)
     file_path, file_id = data_controller.generate_unique_file_path(
         orig_file_name=file.filename, project_id=project_id
     )
 
     try:
+        # Write the file to the disk
         async with aiofiles.open(file_path, "wb") as f:
             while chunk := await file.read(app_settings.FILE_DEFAULT_CHUNK_SIZE):
                 await f.write(chunk)
@@ -62,7 +77,7 @@ async def upload_file(
             content={"Signal": ResponseSignal.FILE_UPLOAD_FAILED.value},
         )
 
-    # Store the assets into the database
+    # Store the asset in the database
     asset_model = await AssetModel.create_instance(db_client=request.app.db_client)
 
     # project.id is already an ObjectId
@@ -87,6 +102,17 @@ async def upload_file(
 async def process_endpoint(
     request: Request, project_id: int, process_request: ProcessRequest
 ):
+    """
+    Processes the files of a project into chunks.
+
+    Args:
+        request (Request): The incoming request.
+        project_id (int): The ID of the project.
+        process_request (ProcessRequest): The request body.
+
+    Returns:
+        JSONResponse: A JSON response indicating the status of the processing.
+    """
 
     chunk_size = process_request.chunk_size
     overlap_size = process_request.overlap_size
@@ -96,10 +122,18 @@ async def process_endpoint(
 
     project = await project_model.get_or_create_project(project_id=project_id)
 
+    nlp_controller = NLPController(
+        vectordb_client=request.app.vectordb_client,
+        generation_client=request.app.generation_client,
+        embedding_client=request.app.embedding_client,
+        template_parser=request.app.template_parser,
+    )
+
     asset_model = await AssetModel.create_instance(db_client=request.app.db_client)
 
     project_files_ids = {}
     if process_request.file_id:
+        # Get the asset record for the given file ID
         asset_record = await asset_model.get_asset_record(
             asset_project_id=project.id,  # Use project.id which is an ObjectId
             asset_name=process_request.file_id,
@@ -116,7 +150,7 @@ async def process_endpoint(
         project_files_ids = {asset_record.id: asset_record.asset_name}
 
     else:
-        # project.id is already an ObjectId from the Project model
+        # Get all assets for the project
         project_files = await asset_model.get_all_project_assets(
             asset_project_id=project.id,
             asset_type=AssetTypeEnum.FILE.value,
@@ -146,13 +180,20 @@ async def process_endpoint(
 
     chunk_model = await ChunkModel.create_instance(db_client=request.app.db_client)
 
+    # Reset the vector database collection and chunks if requested
     if do_reset == 1:
-        # Delete existing chunks for the project
+        collection_name = nlp_controller.create_collection_name(project_id=project.id)
+
+        _ = await request.app.vectordb_client.delete_collection(
+            collection_name=collection_name
+        )
+
         deleted_count = await chunk_model.delete_chunks_by_project_id(
             project_id=project.id
         )
         logger.info(f"Deleted {deleted_count} existing chunks for project {project_id}")
 
+    # Process each file
     for asset_id, file_id in project_files_ids.items():
         file_content = process_controller.get_file_content(file_id=file_id)
 
@@ -160,6 +201,7 @@ async def process_endpoint(
             logger.error(f"Error while processing file: {file_id}")
             continue
 
+        # Process the file content into chunks
         file_chunks = process_controller.process_file_content(
             file_content=file_content,
             file_id=file_id,
@@ -174,6 +216,7 @@ async def process_endpoint(
                 content={"signal": ResponseSignal.PROCESSING_FAILED.value},
             )
 
+        # Create DataChunk objects for each chunk
         file_chunks_records = [
             DataChunk(
                 chunk_content=chunk.page_content,
@@ -185,6 +228,7 @@ async def process_endpoint(
             for i, chunk in enumerate(file_chunks)
         ]
 
+        # Insert the chunks into the database
         no_records += await chunk_model.insert_many_chunks(chunks=file_chunks_records)
         no_files += 1
 
