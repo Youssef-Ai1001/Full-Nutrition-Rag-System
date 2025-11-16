@@ -2,6 +2,9 @@ from enum import Enum
 
 
 class ResponseSignal(Enum):
+    """
+    This enum represents the response signals that can be sent to the client.
+    """
 
     FILE_VALIDATED_SUCCESS = "file_validate_successfully"
     FILE_TYPE_NOT_SUPPORTED = "file_type_not_supported"
