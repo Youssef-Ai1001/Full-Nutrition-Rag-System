@@ -57,9 +57,15 @@ class PGVectorProvider(VectorDBInterface):
         """
         async with self.db_client() as session:
             async with session.begin():
-                # Create the vector extension if it doesn't exist
-                await session.execute(sql_text("CREATE EXTENSION IF NOT EXISTS vector"))
-                await session.commit()
+                # Check if vector extension already exists
+                result = await session.execute(
+                    sql_text("SELECT 1 FROM pg_extension WHERE extname='vector'")
+                )
+                exists = result.scalar_one_or_none()
+
+                if not exists:
+                    await session.execute(sql_text("CREATE EXTENSION IF NOT EXISTS vector"))
+                    await session.commit()
 
     async def disconnect(self):
         """
@@ -109,7 +115,7 @@ class PGVectorProvider(VectorDBInterface):
                 results = await session.execute(
                     list_tbl, {"prefix": self.pgvector_table_prefix}
                 )
-                records = results.scalar().all()
+                records = [row[0] for row in results.fetchall()]
         return records
 
     async def get_collection_info(self, collection_name: str) -> dict:
