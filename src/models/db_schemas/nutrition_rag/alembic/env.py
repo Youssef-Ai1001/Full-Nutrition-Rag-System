@@ -58,25 +58,21 @@ def run_migrations_online() -> None:
     and associate a connection with the context.
 
     """
-    # create an engine from the config file
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
 
-    # connect to the database
     with connectable.connect() as connection:
         context.configure(
             connection=connection, target_metadata=target_metadata
         )
 
-        # run the migrations
         with context.begin_transaction():
             context.run_migrations()
 
 
-# run the migrations
 if context.is_offline_mode():
     run_migrations_offline()
 else:

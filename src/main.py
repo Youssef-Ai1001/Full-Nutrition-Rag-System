@@ -6,13 +6,13 @@ from stores.vectordb.VectorDBProviderFactory import VectorDBProviderFactory
 from stores.llm.templates.TemplateParser import TemplateParser
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
-# from utils.metrics import setup_metrics
+from utils.metrics import setup_metrics
 
 # Create a FastAPI application
 app = FastAPI()
 
-# # Setup Prometheus metrics
-# setup_metrics(app)
+# Setup Prometheus metrics
+setup_metrics(app)
 
 @app.on_event("startup")
 async def startup_span():
