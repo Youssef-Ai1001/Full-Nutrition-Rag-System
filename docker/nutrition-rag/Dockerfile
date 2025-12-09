@@ -24,7 +24,7 @@ COPY src/ .
 # Create directory structure for Alembic
 RUN mkdir -p /app/models/db_schemas/nutrition_rag/
 
-COPY docker/nutrition-rag/alembic.ini /app/models/db_schemas/nutrition_rag/alembic/
+COPY docker/nutrition-rag/alembic.ini /app/models/db_schemas/nutrition_rag/alembic.ini
 
 COPY docker/nutrition-rag/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
