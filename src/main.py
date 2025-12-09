@@ -29,6 +29,20 @@ async def startup_span():
         app.db_engine, class_=AsyncSession, expire_on_commit=False
     )
 
+    # Ensure all SQLAlchemy models' tables exist when migrations are not present
+    try:
+        # import the Base where models register their metadata
+        from models.db_schemas.nutrition_rag.schemas.nutrition_rag_base import (
+            SQLAlchemyBase,
+        )
+
+        # create missing tables (runs in sync on the async engine)
+        async with app.db_engine.begin() as conn:
+            await conn.run_sync(SQLAlchemyBase.metadata.create_all)
+    except Exception:
+        # don't crash startup for now; log is available in container logs
+        pass
+
     # Create LLM and vector database provider factories
     llm_provider_factory = LLMProviderFactory(settings)
     vectordb_provider_factory = VectorDBProviderFactory(config=settings, db_client=app.db_client)
